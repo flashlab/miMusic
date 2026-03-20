@@ -24,9 +24,9 @@ fn on_output_data(py: Python, data: Py<PyBytes>) -> PyResult<Bound<PyAny>> {
 }
 
 #[pyfunction]
-fn start_server(py: Python) -> PyResult<Bound<PyAny>> {
-    pyo3_async_runtimes::tokio::future_into_py(py, async {
-        AppServer::run().await;
+fn start_server(py: Python, port: u16) -> PyResult<Bound<PyAny>> {
+    pyo3_async_runtimes::tokio::future_into_py(py, async move {
+        AppServer::run(port).await;
         Ok(())
     })
 }

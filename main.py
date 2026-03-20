@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import argparse
 import asyncio
 import json
 import logging
@@ -11,12 +14,45 @@ import wave
 from dataclasses import dataclass
 from typing import Any
 
-import open_xiaoai_server
+from config_loader import load_config
 
-from config import MUSIC_CONFIG
+
+def _config_arg(value: str) -> str:
+    resolved_path = os.path.abspath(value)
+    if not os.path.isfile(resolved_path):
+        raise argparse.ArgumentTypeError(
+            f"config file does not exist: {resolved_path}. "
+            "Copy config.json.example to a real config file and pass it with --config."
+        )
+    return resolved_path
+
+
+def parse_cli_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        default="config.json",
+        type=_config_arg,
+        help="Path to config.json",
+    )
+    return parser.parse_args()
+
+
+CLI_ARGS = parse_cli_args()
+MUSIC_CONFIG = load_config(CLI_ARGS.config)
+LOG_LEVEL = str((MUSIC_CONFIG.get("logging") or {}).get("level", "INFO")).upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+import open_xiaoai_server
 from music_search import MusicSearcher
 from music_search import extract_play_keyword
+from music_search import is_exact_command
 from music_search import is_stop_play_command
+from music_search import normalize_exact_keywords
 from music_search import normalize_keyword
 from music_service import LocalMusicHttpServer
 from music_service import build_music_server
@@ -24,14 +60,6 @@ from player_control import ask_xiaoai
 from player_control import play_music_url
 from player_control import speak_text
 from player_control import stop_playback
-
-
-LOG_LEVEL = str((MUSIC_CONFIG.get("logging") or {}).get("level", "INFO")).upper()
-logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,27 +106,43 @@ async def on_event(event: str):
     if not text:
         return
 
-    logger.info("ASR 最终文本: %s", text)
-    await App.handle_user_speech_interrupt(text)
+    logger.info("ASR final text: %s", text)
+    is_stop = is_stop_play_command(text, App.stop_keywords)
+    is_previous = App._is_previous_song_command(text)
+    is_next = App._is_next_song_command(text)
+    is_refresh = App._is_refresh_index_command(text)
+    is_random = App._is_random_play_command(text)
+    keyword = extract_play_keyword(text, App.play_keywords)
+    preserve_queue = is_previous or is_next
+    await App.handle_user_speech_interrupt(text, preserve_queue=preserve_queue)
 
-    if is_stop_play_command(text, App.stop_keywords):
-        App.disarm_reply_interrupt("收到停止命令")
+    if is_stop:
+        App.disarm_reply_interrupt("voice stop command")
         asyncio.create_task(App.stop_music())
         return
 
-    if App._is_refresh_index_command(text):
-        App.arm_reply_interrupt("语音刷新")
-        asyncio.create_task(App.refresh_music_index_and_reply("语音刷新"))
+    if is_previous:
+        App.arm_reply_interrupt("voice previous song")
+        asyncio.create_task(App.play_previous_song())
         return
 
-    if App._is_random_play_command(text):
-        App.arm_reply_interrupt("语音随机播放")
+    if is_next:
+        App.arm_reply_interrupt("voice next song")
+        asyncio.create_task(App.play_next_song())
+        return
+
+    if is_refresh:
+        App.arm_reply_interrupt("voice refresh index")
+        asyncio.create_task(App.refresh_music_index_and_reply("voice refresh index"))
+        return
+
+    if is_random:
+        App.arm_reply_interrupt("voice random play")
         asyncio.create_task(App.play_random_music())
         return
 
-    keyword = extract_play_keyword(text, App.play_keywords)
     if keyword:
-        App.arm_reply_interrupt(f"语音搜索播放:{keyword}")
+        App.arm_reply_interrupt(f"voice search play:{keyword}")
         asyncio.create_task(App.play_local_music_by_keyword(keyword))
 
 
@@ -110,6 +154,7 @@ class App:
     loop: asyncio.AbstractEventLoop | None = None
     music_server: LocalMusicHttpServer | None = None
     local_music_lock = asyncio.Lock()
+    play_history: list[SongItem] = []
     play_queue: list[SongItem] = []
     current_song: SongItem | None = None
     timer_task: asyncio.Task | None = None
@@ -138,25 +183,18 @@ class App:
 
     command_config = MUSIC_CONFIG.get("commands", {}) or {}
     play_keywords = list(command_config.get("play_keywords", []))
-    stop_keywords = set(command_config.get("stop_keywords", []))
-    refresh_keywords = {
-        normalize_keyword(keyword).replace(" ", "")
-        for keyword in command_config.get("refresh_keywords", [])
-        if normalize_keyword(keyword)
-    }
-    random_play_keywords = {
-        normalize_keyword(keyword).replace(" ", "")
-        for keyword in command_config.get("random_play_keywords", [])
-        if normalize_keyword(keyword)
-    }
-    interrupt_whitelist_keywords = {
-        normalize_keyword(keyword).replace(" ", "")
-        for keyword in command_config.get("interrupt_whitelist_keywords", [])
-        if normalize_keyword(keyword)
-    }
+    stop_keywords = normalize_exact_keywords(command_config.get("stop_keywords", []))
+    previous_keywords = normalize_exact_keywords(command_config.get("previous_keywords", []))
+    next_keywords = normalize_exact_keywords(command_config.get("next_keywords", []))
+    refresh_keywords = normalize_exact_keywords(command_config.get("refresh_keywords", []))
+    random_play_keywords = normalize_exact_keywords(command_config.get("random_play_keywords", []))
+    interrupt_whitelist_keywords = normalize_exact_keywords(
+        command_config.get("interrupt_whitelist_keywords", [])
+    )
     reply_interrupt_timeout_sec = float(command_config.get("reply_interrupt_timeout_sec", 20))
     reply_interrupt_cooldown_sec = float(command_config.get("reply_interrupt_cooldown_sec", 1.2))
     auto_resume_delay_sec = float(command_config.get("auto_resume_delay_sec", 1.8))
+    xiaoai_port = int((MUSIC_CONFIG.get("xiaoai") or {}).get("port", 4399))
 
     searcher = MusicSearcher(
         music_dirs=MUSIC_CONFIG.get("music_dirs", []) or [],
@@ -171,14 +209,18 @@ class App:
         cls.reply_interrupt_armed = True
         cls.reply_interrupt_armed_at = time.monotonic()
         cls.reply_interrupt_reason = reason
-        logger.info("回复拦截窗口已开启: 原因=%s", reason)
+        logger.info("reply interrupt armed: reason=%s", reason)
 
     @classmethod
     def disarm_reply_interrupt(cls, reason: str):
         if not cls.reply_interrupt_armed:
             return
         cls.reply_interrupt_armed = False
-        logger.info("回复拦截窗口已关闭: 原因=%s 触发=%s", cls.reply_interrupt_reason, reason)
+        logger.info(
+            "reply interrupt disarmed: previous_reason=%s trigger=%s",
+            cls.reply_interrupt_reason,
+            reason,
+        )
         cls.reply_interrupt_reason = ""
 
     @classmethod
@@ -187,7 +229,7 @@ class App:
             return False
         now = time.monotonic()
         if now - cls.reply_interrupt_armed_at > cls.reply_interrupt_timeout_sec:
-            cls.disarm_reply_interrupt("超时")
+            cls.disarm_reply_interrupt("timeout")
             return False
         return True
 
@@ -208,19 +250,28 @@ class App:
         return False
 
     @classmethod
-    async def handle_user_speech_interrupt(cls, text: str):
+    async def handle_user_speech_interrupt(cls, text: str, preserve_queue: bool = False):
         normalized = normalize_keyword(text).replace(" ", "")
         if cls._is_user_interrupt_whitelisted(text):
-            cls.disarm_reply_interrupt("用户语音白名单命中")
-            logger.info("用户语音命中打断白名单，不清空队列: %s", text)
+            cls.disarm_reply_interrupt("user speech whitelist")
+            logger.info("speech interrupt matched whitelist, keep queue: %s", text)
             await cls._schedule_auto_resume_after_whitelist(normalized, text)
             return
+        if preserve_queue:
+            cls.disarm_reply_interrupt("user speech preserve queue")
+            logger.info("speech interrupt preserved queue for command: %s", text)
+            return
         cleared_count = await cls.clear_queue(stop_device=True)
-        cls.disarm_reply_interrupt("用户语音打断")
-        logger.info("用户语音打断，已清空队列并停播: 文本=%s 清空数量=%d", text, cleared_count)
+        cls.disarm_reply_interrupt("user speech interrupt")
+        logger.info("speech interrupt cleared queue: text=%s cleared=%d", text, cleared_count)
 
     @classmethod
-    def try_capture_reply_text(cls, header: dict[str, Any], payload: dict[str, Any], line: dict[str, Any]):
+    def try_capture_reply_text(
+        cls,
+        header: dict[str, Any],
+        payload: dict[str, Any],
+        line: dict[str, Any],
+    ):
         namespace = str(header.get("namespace") or "")
         name = str(header.get("name") or "")
         if namespace == "SpeechRecognizer" and name == "RecognizeResult":
@@ -250,7 +301,7 @@ class App:
 
         cls.last_reply_text = unique_texts[0]
         logger.info(
-            "小爱回复捕获: namespace=%s name=%s text=%s",
+            "captured XiaoAi reply: namespace=%s name=%s text=%s",
             namespace or "-",
             name or "-",
             cls.last_reply_text,
@@ -304,26 +355,27 @@ class App:
         async with cls.reply_interrupt_lock:
             if not cls._is_reply_interrupt_armed():
                 return
-            logger.info("命中回复拦截窗口，立即停止小爱当前播报")
+            logger.info("reply interrupt hit, stopping current XiaoAi speech")
             await stop_playback()
 
     @classmethod
     async def _speak_text(cls, text: str):
-        cls.disarm_reply_interrupt("即将发送播报")
+        cls.disarm_reply_interrupt("sending speak request")
         return await speak_text(text)
 
     @classmethod
     async def _ask_xiaoai(cls, text: str):
-        cls.disarm_reply_interrupt("即将发送问答请求")
+        cls.disarm_reply_interrupt("sending ask request")
         return await ask_xiaoai(text)
 
     @classmethod
     async def _play_music_url(cls, url: str):
-        cls.disarm_reply_interrupt("即将发送播放请求")
+        cls.disarm_reply_interrupt("sending play request")
         return await play_music_url(url)
 
     @classmethod
     async def _schedule_auto_resume_after_whitelist(cls, normalized_text: str, raw_text: str):
+        del normalized_text
         if cls.current_song is None:
             return
         cls.whitelist_resume_seq += 1
@@ -331,7 +383,7 @@ class App:
         if cls.whitelist_resume_task and not cls.whitelist_resume_task.done():
             cls.whitelist_resume_task.cancel()
         logger.info(
-            "白名单语音触发自动恢复计划: 文本=%s 延迟=%.1fs",
+            "scheduled auto resume after whitelist command: text=%s delay=%.1fs",
             raw_text,
             cls.auto_resume_delay_sec,
         )
@@ -349,16 +401,15 @@ class App:
             if cls.current_song is None:
                 return
             song = cls.current_song
-            logger.info("执行白名单自动恢复播放: %s", song.name)
+            logger.info("auto resume current song after whitelist command: %s", song.name)
             await cls._cancel_timer_unlocked()
-            await cls._start_song_unlocked(song, trigger="白名单自动恢复")
+            await cls._start_song_unlocked(song, trigger="whitelist auto resume")
 
     @staticmethod
     def _safe_read_command_line(prompt: str = ">>> ") -> str:
         try:
             return input(prompt)
         except UnicodeDecodeError:
-            # Some terminal/input sources may contain non-UTF8 bytes.
             sys.stdout.write(prompt)
             sys.stdout.flush()
             raw = sys.stdin.buffer.readline()
@@ -413,8 +464,8 @@ class App:
     @classmethod
     def _ensure_ffprobe_available(cls):
         if not cls.ffprobe_path:
-            raise RuntimeError("未检测到 ffprobe。请先安装 ffmpeg（含 ffprobe）后再启动")
-        logger.info("运行能力检测: ffprobe=可用(%s)", cls.ffprobe_path)
+            raise RuntimeError("未检测到 ffprobe。请先安装 ffmpeg 后再启动")
+        logger.info("runtime dependency available: ffprobe=%s", cls.ffprobe_path)
 
     @classmethod
     def _get_track_duration_sec(cls, file_path: str) -> float | None:
@@ -438,7 +489,7 @@ class App:
         for idx, file_path in enumerate(files, start=1):
             duration = cls._get_track_duration_sec(file_path)
             if duration is None:
-                logger.warning("跳过无法探测时长的歌曲: %s", file_path)
+                logger.warning("skip song with unknown duration: %s", file_path)
                 continue
             songs.append(
                 SongItem(
@@ -467,6 +518,7 @@ class App:
     async def _clear_queue_unlocked(cls, stop_device: bool) -> int:
         queued_count = len(cls.play_queue) + (1 if cls.current_song else 0)
         await cls._cancel_timer_unlocked()
+        cls.play_history.clear()
         cls.play_queue.clear()
         cls.current_song = None
         if stop_device:
@@ -480,9 +532,9 @@ class App:
 
     @classmethod
     def _log_queue(cls, songs: list[SongItem]):
-        logger.info("播放队列已更新: 共%d首", len(songs))
+        logger.info("play queue updated: total=%d", len(songs))
         for song in songs:
-            logger.info("队列[%d] %s", song.index, song.name)
+            logger.info("queue[%d] %s", song.index, song.name)
 
     @classmethod
     def _schedule_timer_unlocked(cls, duration_sec: float):
@@ -494,7 +546,7 @@ class App:
         cls.current_song = song
         result = await cls._play_music_url(song.url)
         logger.info(
-            "开始播放: 来源=%s 第%d首 %s 时长=%.1f秒 剩余队列=%d 路径=%s",
+            "start song: trigger=%s index=%d name=%s duration=%.1fs queue_remaining=%d path=%s",
             trigger,
             song.index,
             song.name,
@@ -502,7 +554,7 @@ class App:
             len(cls.play_queue),
             song.path,
         )
-        logger.debug("播放接口返回: %s", result)
+        logger.debug("play api result: %s", result)
         cls._schedule_timer_unlocked(song.duration_sec)
 
     @classmethod
@@ -515,16 +567,18 @@ class App:
         async with cls.local_music_lock:
             cls.timer_task = None
             if not cls.play_queue:
+                cls._push_current_to_history_unlocked()
                 cls.current_song = None
                 return
+            cls._push_current_to_history_unlocked()
             next_song = cls.play_queue.pop(0)
             logger.info(
-                "自动切歌: 第%d首 %s，剩余队列=%d",
+                "auto next song: index=%d name=%s queue_remaining=%d",
                 next_song.index,
                 next_song.name,
                 len(cls.play_queue),
             )
-            await cls._start_song_unlocked(next_song, trigger="自动切歌")
+            await cls._start_song_unlocked(next_song, trigger="auto next")
 
     @classmethod
     async def refresh_music_index(cls, reason: str):
@@ -533,7 +587,7 @@ class App:
             total = await asyncio.to_thread(cls.searcher.refresh_index)
             cost_ms = (time.monotonic() - start_time) * 1000
             logger.info(
-                "曲库索引刷新完成: 原因=%s 总数=%d 耗时=%.1f毫秒",
+                "music index refreshed: reason=%s total=%d cost=%.1fms",
                 reason,
                 total,
                 cost_ms,
@@ -542,42 +596,53 @@ class App:
 
     @classmethod
     def _is_refresh_index_command(cls, text: str) -> bool:
-        normalized = normalize_keyword(text).replace(" ", "")
-        return bool(normalized) and normalized in cls.refresh_keywords
+        return is_exact_command(text, cls.refresh_keywords)
 
     @classmethod
     def _is_random_play_command(cls, text: str) -> bool:
-        normalized = normalize_keyword(text).replace(" ", "")
-        return bool(normalized) and normalized in cls.random_play_keywords
+        return is_exact_command(text, cls.random_play_keywords)
+
+    @classmethod
+    def _is_previous_song_command(cls, text: str) -> bool:
+        return is_exact_command(text, cls.previous_keywords)
+
+    @classmethod
+    def _is_next_song_command(cls, text: str) -> bool:
+        return is_exact_command(text, cls.next_keywords)
+
+    @classmethod
+    def _push_current_to_history_unlocked(cls):
+        if cls.current_song is not None:
+            cls.play_history.append(cls.current_song)
 
     @classmethod
     async def refresh_music_index_and_reply(cls, reason: str):
         try:
             if cls.index_refresh_lock.locked():
-                await cls._speak_text("曲库正在刷新，请稍候")
+                await cls._speak_text("曲库正在刷新，请稍等")
                 return
-            await cls._speak_text("正在刷新曲库，请稍候")
+            await cls._speak_text("正在刷新曲库，请稍等")
             total, cost_ms = await cls.refresh_music_index(reason)
             await cls._speak_text(f"曲库刷新完成，共{total}首，耗时{cost_ms / 1000:.1f}秒")
         except Exception as exc:
-            logger.exception("曲库索引刷新失败: 原因=%s 错误=%s", reason, exc)
+            logger.exception("music index refresh failed: reason=%s error=%s", reason, exc)
             await cls._speak_text("曲库刷新失败，请稍后重试")
 
     @classmethod
     async def run_index_refresh_loop(cls):
-        logger.info("曲库索引定时刷新已启动: 间隔=%.1f秒", cls.refresh_interval_sec)
+        logger.info("scheduled index refresh started: interval=%.1fs", cls.refresh_interval_sec)
         while True:
             try:
                 await asyncio.sleep(max(cls.refresh_interval_sec, 1))
                 if cls.index_refresh_lock.locked():
-                    logger.info("跳过本次定时刷新: 当前已有刷新任务在执行")
+                    logger.info("skip scheduled refresh because another refresh is in progress")
                     continue
-                await cls.refresh_music_index("定时刷新")
+                await cls.refresh_music_index("scheduled refresh")
             except asyncio.CancelledError:
-                logger.info("曲库索引定时刷新已停止")
+                logger.info("scheduled index refresh stopped")
                 return
             except Exception as exc:
-                logger.exception("曲库索引定时刷新异常: %s", exc)
+                logger.exception("scheduled index refresh failed: %s", exc)
 
     @classmethod
     async def play_local_music_by_keyword(cls, keyword: str):
@@ -585,22 +650,23 @@ class App:
             await cls._speak_text("本地音乐目录还没有配置")
             return
 
-        logger.info("收到搜索请求: 关键词=%s", keyword)
+        logger.info("received local search request: keyword=%s", keyword)
         files = await asyncio.to_thread(cls.searcher.find, keyword)
         count = len(files)
         if count == 0:
             await cls._speak_text(f"没有找到包含{keyword}的歌曲")
-            logger.info("未找到匹配歌曲: 关键词=%s", keyword)
+            logger.info("no local songs matched keyword=%s", keyword)
             return
 
         songs = await asyncio.to_thread(cls._build_song_items, files, cls.music_server)
         if not songs:
             await cls._speak_text("没有可播放的歌曲，无法解析音频时长")
-            logger.warning("搜索结果存在但无可播放歌曲: 关键词=%s", keyword)
+            logger.warning("search results exist but none are playable: keyword=%s", keyword)
             return
+
         cleared_count = await cls.clear_queue(stop_device=True)
         logger.info(
-            "搜索命中并替换队列: 关键词=%s 命中=%d 清空旧队列=%d",
+            "replaced queue with search results: keyword=%s matched=%d cleared=%d",
             keyword,
             count,
             cleared_count,
@@ -612,12 +678,12 @@ class App:
             cls.play_queue = songs
             first_song = cls.play_queue.pop(0)
             logger.info(
-                "开始播放搜索结果首曲: 第%d首 %s，剩余队列=%d",
+                "starting first search result: index=%d name=%s queue_remaining=%d",
                 first_song.index,
                 first_song.name,
                 len(cls.play_queue),
             )
-            await cls._start_song_unlocked(first_song, trigger="搜索播放")
+            await cls._start_song_unlocked(first_song, trigger="search play")
 
     @classmethod
     async def play_random_music(cls):
@@ -625,21 +691,22 @@ class App:
             await cls._speak_text("本地音乐目录还没有配置")
             return
 
-        logger.info("收到随机播放请求")
+        logger.info("received random play request")
         files = await asyncio.to_thread(cls.searcher.random_pick)
         count = len(files)
         if count == 0:
             await cls._speak_text("曲库为空，无法随机播放")
-            logger.info("随机播放失败: 曲库为空")
+            logger.info("random play failed because library is empty")
             return
 
         songs = await asyncio.to_thread(cls._build_song_items, files, cls.music_server)
         if not songs:
             await cls._speak_text("没有可播放的歌曲，无法解析音频时长")
-            logger.warning("随机结果存在但无可播放歌曲")
+            logger.warning("random results exist but none are playable")
             return
+
         cleared_count = await cls.clear_queue(stop_device=True)
-        logger.info("随机选歌并替换队列: 命中=%d 清空旧队列=%d", count, cleared_count)
+        logger.info("replaced queue with random songs: matched=%d cleared=%d", count, cleared_count)
         cls._log_queue(songs)
         await cls._speak_text(f"好的，随机播放{count}首歌曲")
 
@@ -647,36 +714,75 @@ class App:
             cls.play_queue = songs
             first_song = cls.play_queue.pop(0)
             logger.info(
-                "开始播放随机队列首曲: 第%d首 %s，剩余队列=%d",
+                "starting first random result: index=%d name=%s queue_remaining=%d",
                 first_song.index,
                 first_song.name,
                 len(cls.play_queue),
             )
-            await cls._start_song_unlocked(first_song, trigger="随机播放")
+            await cls._start_song_unlocked(first_song, trigger="random play")
+
+    @classmethod
+    async def play_previous_song(cls):
+        async with cls.local_music_lock:
+            if not cls.play_history:
+                await cls._speak_text("当前没有上一首")
+                return
+            await cls._cancel_timer_unlocked()
+            if cls.current_song is not None:
+                cls.play_queue.insert(0, cls.current_song)
+            previous_song = cls.play_history.pop()
+            logger.info(
+                "manual previous song: index=%d name=%s history=%d queue=%d",
+                previous_song.index,
+                previous_song.name,
+                len(cls.play_history),
+                len(cls.play_queue),
+            )
+            await cls._start_song_unlocked(previous_song, trigger="manual previous")
+
+    @classmethod
+    async def play_next_song(cls):
+        async with cls.local_music_lock:
+            if not cls.play_queue:
+                await cls._speak_text("当前没有下一首")
+                return
+            await cls._cancel_timer_unlocked()
+            cls._push_current_to_history_unlocked()
+            next_song = cls.play_queue.pop(0)
+            logger.info(
+                "manual next song: index=%d name=%s queue=%d history=%d",
+                next_song.index,
+                next_song.name,
+                len(cls.play_queue),
+                len(cls.play_history),
+            )
+            await cls._start_song_unlocked(next_song, trigger="manual next")
 
     @classmethod
     async def stop_music(cls):
         count = await cls.clear_queue(stop_device=True)
-        logger.info("已停止播放并清空队列: 数量=%d", count)
+        logger.info("playback stopped and queue cleared: count=%d", count)
 
     @classmethod
     async def command_loop(cls):
         print(
             "\nCommands:\n"
-            "  say <text>   - 小爱直接播报文本\n"
-            "  ask <text>   - 让小爱理解并回复\n"
-            "  music <url>  - 让小爱播放音乐 URL\n"
-            "  local <kw>   - 搜索本地目录并播放匹配歌曲\n"
-            "  stop         - 暂停当前播放\n"
-            "  refresh      - 手动刷新曲库索引\n"
-            "  quit         - 退出\n"
+            "  say <text>   - speak text\n"
+            "  ask <text>   - ask XiaoAi\n"
+            "  music <url>  - play a remote music url\n"
+            "  local <kw>   - search and play local music\n"
+            "  prev         - play previous song\n"
+            "  next         - play next song\n"
+            "  stop         - stop playback\n"
+            "  refresh      - refresh music index\n"
+            "  quit         - exit\n"
         )
 
         while True:
             try:
                 line = await asyncio.to_thread(cls._safe_read_command_line, ">>> ")
             except EOFError:
-                logger.info("检测到 stdin 关闭，退出命令循环")
+                logger.info("stdin closed, exiting command loop")
                 break
 
             args = shlex.split(line.strip())
@@ -691,25 +797,33 @@ class App:
                 await cls.stop_music()
                 continue
 
+            if cmd in {"prev", "previous"}:
+                await cls.play_previous_song()
+                continue
+
+            if cmd == "next":
+                await cls.play_next_song()
+                continue
+
             if cmd == "refresh":
-                await cls.refresh_music_index("手动刷新")
+                await cls.refresh_music_index("manual refresh")
                 continue
 
             if len(args) < 2:
-                print("参数不足")
+                print("missing arguments")
                 continue
 
             content = " ".join(args[1:])
             if cmd == "say":
-                logger.info("[say] 返回=%s", await cls._speak_text(content))
+                logger.info("[say] result=%s", await cls._speak_text(content))
             elif cmd == "ask":
-                logger.info("[ask] 返回=%s", await cls._ask_xiaoai(content))
+                logger.info("[ask] result=%s", await cls._ask_xiaoai(content))
             elif cmd == "music":
-                logger.info("[music] 返回=%s", await cls._play_music_url(content))
+                logger.info("[music] result=%s", await cls._play_music_url(content))
             elif cmd == "local":
                 await cls.play_local_music_by_keyword(content)
             else:
-                logger.warning("未知命令: %s", cmd)
+                logger.warning("unknown command: %s", cmd)
 
     @classmethod
     async def start(cls):
@@ -719,17 +833,18 @@ class App:
         cls._ensure_ffprobe_available()
         cls.music_server = build_music_server(MUSIC_CONFIG.get("http", {}) or {})
         cls.music_server.start()
-        logger.info("音乐 HTTP 服务已启动: %s", cls.music_server.base_url)
+        logger.info("music HTTP server started: %s", cls.music_server.base_url)
+        logger.info("XiaoAi listener port: %d", cls.xiaoai_port)
 
-        await cls.refresh_music_index("启动刷新")
+        await cls.refresh_music_index("startup refresh")
         if cls.refresh_interval_sec > 0:
             cls.index_refresh_task = asyncio.create_task(cls.run_index_refresh_loop())
         else:
-            logger.info("曲库索引定时刷新已禁用: refresh_interval_sec=%.1f", cls.refresh_interval_sec)
+            logger.info("scheduled index refresh disabled: refresh_interval_sec=%.1f", cls.refresh_interval_sec)
 
         try:
             open_xiaoai_server.register_fn("on_event", on_event_callback)
-            server_task = open_xiaoai_server.start_server()
+            server_task = open_xiaoai_server.start_server(cls.xiaoai_port)
             if sys.stdin.isatty():
                 command_task = asyncio.create_task(cls.command_loop())
                 done, pending = await asyncio.wait(
@@ -744,7 +859,7 @@ class App:
                     except asyncio.CancelledError:
                         pass
             else:
-                logger.info("非交互模式: 命令行循环已禁用")
+                logger.info("non-interactive mode, command loop disabled")
                 await server_task
         finally:
             if server_task:
@@ -757,7 +872,8 @@ class App:
                     await cls.index_refresh_task
                 except asyncio.CancelledError:
                     pass
-            cls.music_server.stop()
+            if cls.music_server is not None:
+                cls.music_server.stop()
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ module.exports = {
       name: "XiaoAiMusic",
       cwd: __dirname,
       script: "uv",
-      args: "run main.py",
+      args: "run main.py --config config.json",
       interpreter: "none",
       autorestart: true,
       max_restarts: 10,

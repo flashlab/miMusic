@@ -1,9 +1,9 @@
-use crate::python::PythonManager;
 use crate::base::{AppError, VERSION};
 use crate::connect::data::{Event, Request, Response, Stream};
 use crate::connect::handler::MessageHandler;
 use crate::connect::message::{MessageManager, WsStream};
 use crate::connect::rpc::RPC;
+use crate::python::PythonManager;
 use pyo3::types::PyBytes;
 use pyo3::types::PyString;
 use pyo3::Python;
@@ -19,40 +19,35 @@ impl AppServer {
         Ok(WsStream::Server(ws_stream))
     }
 
-    pub async fn run() {
-        let addr = "0.0.0.0:4399";
-        let listener = TcpListener::bind(addr)
+    pub async fn run(port: u16) {
+        let addr = format!("0.0.0.0:{port}");
+        let listener = TcpListener::bind(&addr)
             .await
-            .unwrap_or_else(|_| panic!("❌ 绑定地址失败: {}", addr));
-        crate::pylog!("✅ 已启动: {:?}", addr);
+            .unwrap_or_else(|_| panic!("failed to bind address: {}", addr));
+        crate::pylog!("listening on {:?}", addr);
         while let Ok((stream, addr)) = listener.accept().await {
-            // 同一时刻只处理一个连接
             AppServer::handle_connection(stream, addr).await;
         }
     }
 
     async fn handle_connection(stream: TcpStream, addr: std::net::SocketAddr) {
         let Ok(ws_stream) = AppServer::connect(stream).await else {
-            crate::pylog!("❌ 连接异常: {}", addr);
+            crate::pylog!("connection failed: {}", addr);
             return;
         };
-        crate::pylog!("✅ 已连接: {:?}", addr);
+        crate::pylog!("connected: {:?}", addr);
         AppServer::init(ws_stream).await;
         if let Err(e) = MessageManager::instance().process_messages().await {
-            crate::pylog!("❌ 消息处理异常: {}", e);
+            crate::pylog!("message processing failed: {}", e);
         }
         AppServer::dispose().await;
-        crate::pylog!("❌ 已断开连接");
+        crate::pylog!("disconnected");
     }
 
     async fn init(ws_stream: WsStream) {
         MessageManager::instance().init(ws_stream).await;
-        MessageHandler::<Event>::instance()
-            .set_handler(on_event)
-            .await;
-        MessageHandler::<Stream>::instance()
-            .set_handler(on_stream)
-            .await;
+        MessageHandler::<Event>::instance().set_handler(on_event).await;
+        MessageHandler::<Stream>::instance().set_handler(on_stream).await;
 
         let rpc = RPC::instance();
         rpc.add_command("get_version", get_version).await;

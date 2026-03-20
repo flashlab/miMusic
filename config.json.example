@@ -1,0 +1,68 @@
+{
+  "music_dirs": [
+    "/root/music"
+  ],
+  "supported_audio_extensions": [
+    ".mp3",
+    ".flac",
+    ".wav",
+    ".m4a",
+    ".aac",
+    ".ogg"
+  ],
+  "search": {
+    "max_results": 20,
+    "refresh_interval_sec": 0,
+    "index_file": "cache/music_index.json"
+  },
+  "commands": {
+    "play_keywords": [
+      "播放"
+    ],
+    "stop_keywords": [
+      "停止播放",
+      "暂停播放",
+      "停止",
+      "暂停",
+      "闭嘴",
+      "别放了",
+      "不要放了",
+      "关机"
+    ],
+    "previous_keywords": [
+      "上一首",
+      "上一曲"
+    ],
+    "next_keywords": [
+      "下一首",
+      "下一曲"
+    ],
+    "refresh_keywords": [
+      "刷新曲库"
+    ],
+    "random_play_keywords": [
+      "随便听听"
+    ],
+    "interrupt_whitelist_keywords": [
+      "音量",
+      "声音",
+      "大点声",
+      "小点声",
+      "调大音量",
+      "调小音量",
+      "静音",
+      "取消静音"
+    ],
+    "auto_resume_delay_sec": 1.8
+  },
+  "http": {
+    "port": 18080,
+    "base_url": ""
+  },
+  "xiaoai": {
+    "port": 4399
+  },
+  "logging": {
+    "level": "INFO"
+  }
+}

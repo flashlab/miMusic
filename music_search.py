@@ -26,10 +26,22 @@ def extract_play_keyword(text: str, play_keywords: list[str] | None = None) -> s
     return None
 
 
+def normalize_exact_keywords(keywords: set[str] | list[str] | None = None) -> set[str]:
+    return {
+        normalize_keyword(keyword).replace(" ", "")
+        for keyword in (keywords or [])
+        if normalize_keyword(keyword)
+    }
+
+
+def is_exact_command(text: str, keywords: set[str] | list[str] | None = None) -> bool:
+    normalized = normalize_keyword(text).replace(" ", "")
+    keyword_set = normalize_exact_keywords(keywords)
+    return bool(normalized) and normalized in keyword_set
+
+
 def is_stop_play_command(text: str, stop_keywords: set[str] | list[str] | None = None) -> bool:
-    normalized = text.strip().replace(" ", "")
-    keyword_set = set(stop_keywords or [])
-    return normalized in keyword_set
+    return is_exact_command(text, stop_keywords)
 
 
 class MusicSearcher:
