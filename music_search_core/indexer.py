@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 
+import opencc
+
 from music_search_core.models import IndexedSong
 from music_search_core.models import SongMetadata
 
@@ -66,6 +68,10 @@ class MusicIndexer:
         default_workers = min(8, cpu_count)
         self.metadata_workers = max(1, int(metadata_workers or default_workers))
         self._metadata_extractor = MusicMetadataExtractor()
+        self._converter = opencc.OpenCC("t2s")
+
+    def _t2s(self, text: str) -> str:
+        return self._converter.convert(text)
 
     def build(
         self,
@@ -73,11 +79,11 @@ class MusicIndexer:
         previous_songs: list[IndexedSong] | None = None,
     ) -> list[IndexedSong]:
         candidates: list[tuple[str, str, int, int]] = []
-        logger.info("开始刷新曲库索引: 目录=%s", music_dirs)
+        logger.info("开始刷新曲库索引：目录=%s", music_dirs)
         for directory in music_dirs:
             directory = os.path.abspath(os.path.expanduser(directory))
             if not os.path.isdir(directory):
-                logger.warning("跳过无效音乐目录: %s", directory)
+                logger.warning("跳过无效音乐目录：%s", directory)
                 continue
             for root, _, files in os.walk(directory):
                 for name in files:
@@ -92,7 +98,7 @@ class MusicIndexer:
                     candidates.append((path, name, int(stat_result.st_size), int(stat_result.st_mtime_ns)))
 
         if not candidates:
-            logger.info("曲库索引刷新完成: 总数=0")
+            logger.info("曲库索引刷新完成：总数=0")
             return []
 
         previous_map = {item.path: item for item in (previous_songs or [])}
@@ -115,7 +121,7 @@ class MusicIndexer:
                 songs = reused + list(pool.map(self._build_indexed_song, pending))
         songs.sort(key=lambda item: item.path)
         logger.info(
-            "曲库索引刷新完成: 总数=%d 复用=%d 更新=%d 并行度=%d",
+            "曲库索引刷新完成：总数=%d 复用=%d 更新=%d 并行度=%d",
             len(songs),
             len(reused),
             len(pending),
@@ -134,10 +140,10 @@ class MusicIndexer:
         metadata = self._safe_extract_metadata(path)
         return IndexedSong(
             path=path,
-            name_lower=name.lower(),
-            title_lower=metadata.title.lower(),
-            artist_lower=metadata.artist.lower(),
-            album_lower=metadata.album.lower(),
+            name_lower=self._t2s(name.lower()),
+            title_lower=self._t2s(metadata.title.lower()),
+            artist_lower=self._t2s(metadata.artist.lower()),
+            album_lower=self._t2s(metadata.album.lower()),
             size=size,
             mtime_ns=mtime_ns,
         )

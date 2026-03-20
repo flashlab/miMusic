@@ -3,7 +3,7 @@ name = "XiaoAiMusic"
 version = "1.0.0"
 description = "小爱音箱 播放本地音乐"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["opencc-python-reimplemented>=0.1.7"]
 
 [build-system]
 requires = ["maturin>=1.0,<2.0"]
