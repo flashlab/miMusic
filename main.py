@@ -759,6 +759,59 @@ class App:
             await cls._start_song_unlocked(next_song, trigger="manual next")
 
     @classmethod
+    async def _handle_api_command(cls, command: str, params: dict) -> str:
+        """Dispatch an HTTP API command to the appropriate App method."""
+        if command == "say":
+            payload = params.get("payload", "")
+            if not payload:
+                raise ValueError("missing query param: payload")
+            result = await cls._speak_text(payload)
+            return str(result)
+
+        if command == "ask":
+            payload = params.get("payload", "")
+            if not payload:
+                raise ValueError("missing query param: payload")
+            result = await cls._ask_xiaoai(payload)
+            return str(result)
+
+        if command == "music":
+            url = params.get("url", "")
+            if not url:
+                raise ValueError("missing query param: url")
+            result = await cls._play_music_url(url)
+            return str(result)
+
+        if command == "local":
+            keyword = params.get("keyword", "")
+            if not keyword:
+                raise ValueError("missing query param: keyword")
+            await cls.play_local_music_by_keyword(keyword)
+            return "ok"
+
+        if command == "prev":
+            await cls.play_previous_song()
+            return "ok"
+
+        if command == "next":
+            await cls.play_next_song()
+            return "ok"
+
+        if command == "stop":
+            await cls.stop_music()
+            return "ok"
+
+        if command == "refresh":
+            await cls.refresh_music_index_and_reply("api")
+            return "ok"
+
+        if command == "random":
+            await cls.play_random_music()
+            return "ok"
+
+        raise ValueError(f"unknown command: {command}")
+
+    @classmethod
     async def stop_music(cls):
         count = await cls.clear_queue(stop_device=True)
         logger.info("playback stopped and queue cleared: count=%d", count)
@@ -832,6 +885,8 @@ class App:
         cls.loop = asyncio.get_running_loop()
         cls._ensure_ffprobe_available()
         cls.music_server = build_music_server(MUSIC_CONFIG.get("http", {}) or {})
+        cls.music_server.event_loop = cls.loop
+        cls.music_server.api_handler = cls._handle_api_command
         cls.music_server.start()
         logger.info("music HTTP server started: %s", cls.music_server.base_url)
         logger.info("XiaoAi listener port: %d", cls.xiaoai_port)

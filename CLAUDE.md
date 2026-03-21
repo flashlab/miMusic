@@ -87,9 +87,10 @@ echo $! > logs/app.pid
 
 ### Configuration
 
-Edit `config.py` before running:
+Edit `config.json` before running:
 - `music_dirs`: Local music directories (required)
 - `http.base_url`: Server URL accessible to XiaoAi speaker (e.g., `http://192.168.11.18:18080`)
+- `xiaoai.port`: Listening port of 0.0.0.0
 - `search.max_results`: Playlist size (default 20)
 - `search.refresh_interval_sec`: Auto-refresh interval (0 = disabled)
 - `commands.*_keywords`: Voice command triggers

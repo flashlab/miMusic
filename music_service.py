@@ -1,3 +1,4 @@
+import json
 import logging
 import mimetypes
 import os
@@ -5,6 +6,7 @@ import socket
 import threading
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
+from urllib.parse import parse_qs
 from urllib.parse import quote
 from urllib.parse import unquote
 from urllib.parse import urlparse
@@ -31,6 +33,8 @@ class LocalMusicHttpServer:
         self.base_url = base_url.rstrip("/")
         self._allowed_files: set[str] = set()
         self._lock = threading.Lock()
+        self.event_loop = None
+        self.api_handler = None
         self._server = ThreadingHTTPServer((self.host, self.port), self._build_handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -41,6 +45,10 @@ class LocalMusicHttpServer:
             def do_GET(self):
                 parsed = urlparse(self.path)
                 path = unquote(parsed.path)
+
+                if path.startswith("/api/"):
+                    server_ref._handle_api_request(self, path, parsed.query)
+                    return
 
                 if path.startswith("/file/"):
                     encoded = path.split("/", 3)[2] if len(path.split("/", 3)) >= 3 else ""
@@ -64,6 +72,35 @@ class LocalMusicHttpServer:
                 return
 
         return Handler
+
+    def _handle_api_request(self, handler: BaseHTTPRequestHandler, path: str, query: str):
+        command = path[len("/api/"):].strip("/")
+        params = {k: v[0] for k, v in parse_qs(query).items()}
+
+        loop = self.event_loop
+        api_fn = self.api_handler
+        if loop is None or api_fn is None:
+            self._send_json(handler, 503, {"ok": False, "error": "API not ready"})
+            return
+
+        future = __import__("asyncio").run_coroutine_threadsafe(api_fn(command, params), loop)
+        try:
+            result = future.result(timeout=30)
+            self._send_json(handler, 200, {"ok": True, "result": result})
+        except TimeoutError:
+            self._send_json(handler, 504, {"ok": False, "error": "command timed out"})
+        except Exception as exc:
+            logger.exception("API command error: command=%s error=%s", command, exc)
+            self._send_json(handler, 500, {"ok": False, "error": str(exc)})
+
+    def _send_json(self, handler: BaseHTTPRequestHandler, status: int, data: dict):
+        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.end_headers()
+        handler.wfile.write(body)
 
     def _encode_path(self, path: str) -> str:
         return path.encode("utf-8").hex()
