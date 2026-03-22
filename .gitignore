@@ -2,6 +2,6 @@ target
 .idea
 .vscode
 cache
-config.json
+config*.json
 __pycache__/
 logs

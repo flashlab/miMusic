@@ -37,4 +37,5 @@ class MusicSearchEngine:
             or keyword_lower in song.title_lower
             or keyword_lower in song.artist_lower
             or keyword_lower in song.album_lower
+            or keyword_lower in song.folders_lower
         )

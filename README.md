@@ -23,7 +23,7 @@
 
 示例：
 - 小爱同学，播放许嵩
-    - 逻辑：搜索歌名、歌手、专辑名、文件名中包含许嵩的歌曲，打乱顺序，提取前 20 首播放。
+    - 逻辑：搜索歌名、歌手、专辑名、文件名、路径名中包含许嵩的歌曲，打乱顺序，提取前 20 首播放。
 - 小爱同学，停止播放
     - 逻辑：停止当前播放
 - 小爱同学，随便听听
@@ -135,10 +135,57 @@ curl "http://192.168.11.18:18080/api/stop"
 
 ## 后台运行
 
-前一步的“运行”测试没问题之后，再配置后台运行。PM2/nohup 任选一即可。
+前一步的“运行”测试没问题之后，再配置后台运行。systemd/PM2/nohup 任选一即可。
 
+### system service 后台运行（支持多实例，推荐）
 
-### PM2 后台运行（推荐）
+1. 多个配置文件（可选）
+
+配置文件命名为 config*.json，如 config-mi1.json config-mi2.json。注意各配置之间的 xiaoai.port 与 http.port 不能相同。
+
+2. 新建 `/etc/systemd/system/mimusic@.service`，根据实际情况修改。
+
+```TOML
+[Unit]
+Description=XiaoAI local music - Instance %i
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/miMusic
+
+ExecStart=/root/.local/bin/uv run main.py --config %i.json
+RestartSec=10
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+3. 启动：
+
+```
+sudo systemctl start mimusic@config-mi1
+sudo systemctl start mimusic@config-mi2
+
+```
+
+4. 开机自启：
+
+```
+sudo systemctl enable mimusic@config-mi1
+sudo systemctl enable mimusic@config-mi2
+```
+
+5. 查看日志：
+
+```
+journalctl -u mimusic@config-mi1 -f
+journalctl -u mimusic@config-mi2 -f
+```
+
+### PM2 后台运行
 
 
 1. 安装 PM2（如未安装）：

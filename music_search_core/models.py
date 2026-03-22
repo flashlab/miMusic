@@ -18,6 +18,7 @@ class IndexedSong:
     title_lower: str = ""
     artist_lower: str = ""
     album_lower: str = ""
+    folders_lower: str = ""
     size: int = 0
     mtime_ns: int = 0
 
@@ -42,6 +43,7 @@ class IndexedSong:
             title_lower=str(data.get("title_lower", "")),
             artist_lower=str(data.get("artist_lower", "")),
             album_lower=str(data.get("album_lower", "")),
+            folders_lower=str(data.get("folders_lower", "")),
             size=size,
             mtime_ns=mtime_ns,
         )

@@ -78,7 +78,7 @@ class MusicIndexer:
         music_dirs: list[str],
         previous_songs: list[IndexedSong] | None = None,
     ) -> list[IndexedSong]:
-        candidates: list[tuple[str, str, int, int]] = []
+        candidates: list[tuple[str, str, int, int, str]] = []
         logger.info("开始刷新曲库索引：目录=%s", music_dirs)
         for directory in music_dirs:
             directory = os.path.abspath(os.path.expanduser(directory))
@@ -95,7 +95,7 @@ class MusicIndexer:
                         stat_result = os.stat(path)
                     except Exception:
                         continue
-                    candidates.append((path, name, int(stat_result.st_size), int(stat_result.st_mtime_ns)))
+                    candidates.append((path, name, int(stat_result.st_size), int(stat_result.st_mtime_ns), directory))
 
         if not candidates:
             logger.info("曲库索引刷新完成：总数=0")
@@ -103,9 +103,9 @@ class MusicIndexer:
 
         previous_map = {item.path: item for item in (previous_songs or [])}
         reused: list[IndexedSong] = []
-        pending: list[tuple[str, str, int, int]] = []
+        pending: list[tuple[str, str, int, int, str]] = []
         for item in candidates:
-            path, _, size, mtime_ns = item
+            path, _, size, mtime_ns, _ = item
             prev = previous_map.get(path)
             if prev and prev.size == size and prev.mtime_ns == mtime_ns:
                 reused.append(prev)
@@ -135,15 +135,18 @@ class MusicIndexer:
         except Exception:
             return SongMetadata()
 
-    def _build_indexed_song(self, file_item: tuple[str, str, int, int]) -> IndexedSong:
-        path, name, size, mtime_ns = file_item
+    def _build_indexed_song(self, file_item: tuple[str, str, int, int, str]) -> IndexedSong:
+        path, name, size, mtime_ns, base_dir = file_item
         metadata = self._safe_extract_metadata(path)
+        rel_dir = os.path.relpath(os.path.dirname(path), base_dir)
+        folders_lower = self._t2s(rel_dir.lower()) if rel_dir != "." else ""
         return IndexedSong(
             path=path,
             name_lower=self._t2s(name.lower()),
             title_lower=self._t2s(metadata.title.lower()),
             artist_lower=self._t2s(metadata.artist.lower()),
             album_lower=self._t2s(metadata.album.lower()),
+            folders_lower=folders_lower,
             size=size,
             mtime_ns=mtime_ns,
         )
