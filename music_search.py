@@ -51,12 +51,16 @@ class MusicSearcher:
         max_results: int = 50,
         extensions: set[str] | None = None,
         index_file: str = "",
+        artist_separators: list[str] | None = None,
+        album_separators: list[str] | None = None,
     ):
         self.music_dirs = music_dirs or []
         self.max_results = max_results
         self.extensions = set(extensions or set())
         self._songs = []
         self._lock = threading.RLock()
+        self._artist_separators = list(artist_separators or [])
+        self._album_separators = list(album_separators or [])
 
         self._indexer = MusicIndexer(extensions=self.extensions)
         self._search_engine = MusicSearchEngine()
@@ -89,6 +93,8 @@ class MusicSearcher:
             snapshot,
             keyword_lower,
             self.max_results,
+            artist_separators=self._artist_separators,
+            album_separators=self._album_separators,
         )
         logger.info(
             "内存搜索完成: 关键词=%s 总索引=%d 总匹配=%d 返回=%d 返回上限=%d",

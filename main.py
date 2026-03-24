@@ -201,6 +201,8 @@ class App:
         max_results=max_results,
         extensions=audio_extensions,
         index_file=search_index_file,
+        artist_separators=list(search_config.get("artist_separator", [])),
+        album_separators=list(search_config.get("album_separator", [])),
     )
     ffprobe_path = shutil.which("ffprobe")
 
@@ -672,7 +674,7 @@ class App:
             cleared_count,
         )
         cls._log_queue(songs)
-        await cls._speak_text(f"好的，找到{count}首歌曲")
+        await cls._speak_text(f"找到{count}首歌曲")
 
         async with cls.local_music_lock:
             cls.play_queue = songs
@@ -759,7 +761,7 @@ class App:
             await cls._start_song_unlocked(next_song, trigger="manual next")
 
     @classmethod
-    async def _handle_api_command(cls, command: str, params: dict) -> str:
+    async def _handle_api_command(cls, command: str, params: dict) -> str | dict:
         """Dispatch an HTTP API command to the appropriate App method."""
         if command == "say":
             payload = params.get("payload", "")
@@ -808,6 +810,29 @@ class App:
         if command == "random":
             await cls.play_random_music()
             return "ok"
+
+        if command == "status":
+            async with cls.local_music_lock:
+                current = cls.current_song
+                queue = list(cls.play_queue)
+            return {
+                "current": {
+                    "index": current.index,
+                    "name": current.name,
+                    "path": current.path,
+                    "duration_sec": current.duration_sec,
+                } if current else None,
+                "queue": [
+                    {
+                        "index": s.index,
+                        "name": s.name,
+                        "path": s.path,
+                        "duration_sec": s.duration_sec,
+                    }
+                    for s in queue
+                ],
+                "queue_length": len(queue),
+            }
 
         raise ValueError(f"unknown command: {command}")
 
