@@ -112,8 +112,10 @@ async def on_event(event: str):
     is_next = App._is_next_song_command(text)
     is_refresh = App._is_refresh_index_command(text)
     is_random = App._is_random_play_command(text)
+    is_continue = App._is_continue_command(text)
     keyword = extract_play_keyword(text, App.play_keywords)
-    preserve_queue = is_previous or is_next
+    is_new_play_command = bool(keyword) or is_random
+    preserve_queue = not is_new_play_command
     await App.handle_user_speech_interrupt(text, preserve_queue=preserve_queue)
 
     if is_stop:
@@ -139,6 +141,11 @@ async def on_event(event: str):
     if is_random:
         App.arm_reply_interrupt("voice random play")
         asyncio.create_task(App.play_random_music())
+        return
+
+    if is_continue:
+        App.arm_reply_interrupt("voice continue")
+        asyncio.create_task(App.resume_music())
         return
 
     if keyword:
@@ -188,6 +195,7 @@ class App:
     next_keywords = normalize_exact_keywords(command_config.get("next_keywords", []))
     refresh_keywords = normalize_exact_keywords(command_config.get("refresh_keywords", []))
     random_play_keywords = normalize_exact_keywords(command_config.get("random_play_keywords", []))
+    continue_keywords = normalize_exact_keywords(command_config.get("continue_keywords", []))
     interrupt_whitelist_keywords = normalize_exact_keywords(
         command_config.get("interrupt_whitelist_keywords", [])
     )
@@ -605,6 +613,10 @@ class App:
         return is_exact_command(text, cls.random_play_keywords)
 
     @classmethod
+    def _is_continue_command(cls, text: str) -> bool:
+        return is_exact_command(text, cls.continue_keywords)
+
+    @classmethod
     def _is_previous_song_command(cls, text: str) -> bool:
         return is_exact_command(text, cls.previous_keywords)
 
@@ -740,6 +752,10 @@ class App:
                 len(cls.play_history),
                 len(cls.play_queue),
             )
+            # Wait for XiaoAi's acknowledgement reply to arrive and trigger the
+            # reply interrupt before we start the new song, avoiding a race where
+            # stop_playback() lands after play_music_url().
+            await asyncio.sleep(cls.reply_interrupt_cooldown_sec)
             await cls._start_song_unlocked(previous_song, trigger="manual previous")
 
     @classmethod
@@ -758,6 +774,8 @@ class App:
                 len(cls.play_queue),
                 len(cls.play_history),
             )
+            # Same race-condition guard as play_previous_song.
+            await asyncio.sleep(cls.reply_interrupt_cooldown_sec)
             await cls._start_song_unlocked(next_song, trigger="manual next")
 
     @classmethod
@@ -811,6 +829,10 @@ class App:
             await cls.play_random_music()
             return "ok"
 
+        if command == "continue":
+            await cls.resume_music()
+            return "ok"
+
         if command == "status":
             async with cls.local_music_lock:
                 current = cls.current_song
@@ -835,6 +857,24 @@ class App:
             }
 
         raise ValueError(f"unknown command: {command}")
+
+    @classmethod
+    async def resume_music(cls):
+        async with cls.local_music_lock:
+            if cls.current_song is not None:
+                logger.info("resume: restarting current song: %s", cls.current_song.name)
+                await cls._cancel_timer_unlocked()
+                await asyncio.sleep(cls.reply_interrupt_cooldown_sec)
+                await cls._start_song_unlocked(cls.current_song, trigger="continue resume")
+                return
+            if cls.play_queue:
+                song = cls.play_queue.pop(0)
+                logger.info("resume: starting next queued song: %s", song.name)
+                await asyncio.sleep(cls.reply_interrupt_cooldown_sec)
+                await cls._start_song_unlocked(song, trigger="continue resume")
+                return
+        logger.info("resume: queue is empty, nothing to resume")
+        await cls._speak_text("当前没有播放列表")
 
     @classmethod
     async def stop_music(cls):

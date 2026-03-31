@@ -45,6 +45,10 @@
     "random_play_keywords": [
       "随便听听"
     ],
+    "continue_keywords": [
+      "继续播放",
+      "继续"
+    ],
     "interrupt_whitelist_keywords": [
       "音量",
       "声音",

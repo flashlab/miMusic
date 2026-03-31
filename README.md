@@ -15,12 +15,12 @@
   - 支持通过语音命令主动触发刷洗（命令关键词支持配置）
 - 通过播放关键词搜索播放歌曲
   - 搜索关键词匹配的歌曲，打乱顺序，提取前 20 首播放
-- 通过停止关键词停止当前播放
+- 通过关键词停止、恢复当前播放
 - 通过随便听听关键词，随机播放 20 首歌曲
 - 播放上一首和下一首，调整音量后自动重播
 - 通过关键词限定歌手或专辑名
 
-> 关键词、歌曲数目等均可在 config.py 中配置
+> 关键词、歌曲数目等均可在 config.json 中配置
 
 示例：
 - 小爱同学，播放许嵩
@@ -76,6 +76,7 @@ ffprobe -version
 - 可选 `commands.play_keywords` / `commands.stop_keywords`：语音命令关键词
 - 可选 `http.base_url`：api 服务地址（例如 `http://192.168.11.18:18080`，可选）
 - 可选 `xiaoai.port`：本地监听小爱的端口（例如 `4399`，可选）
+- 可选 `auto_resume_delay_sec`: 匹配到`interrupt_whitelist_keywords`到恢复播放的间隔时间
 
 4. 执行命令启动服务
 
@@ -116,6 +117,7 @@ uv run main.py
 | `/api/random` | 无 | 从曲库中随机播放歌曲 |
 | `/api/prev` | 无 | 播放上一首 |
 | `/api/next` | 无 | 播放下一首 |
+| `/api/continue` | 无 | 继续播放列表 |
 | `/api/stop` | 无 | 停止播放并清空队列 |
 | `/api/refresh` | 无 | 刷新曲库索引 |
 | `/api/status` | 无 | 当前播放曲目及播放列表 |
