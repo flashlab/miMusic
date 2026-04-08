@@ -267,13 +267,14 @@ class App:
             logger.info("speech interrupt matched whitelist, keep queue: %s", text)
             await cls._schedule_auto_resume_after_whitelist(normalized, text)
             return
+        async with cls.local_music_lock:
+            await cls._cancel_timer_unlocked()
         if preserve_queue:
             cls.disarm_reply_interrupt("user speech preserve queue")
-            logger.info("speech interrupt preserved queue for command: %s", text)
+            logger.info("speech interrupt canceled timer, queue preserved:%s", text)
             return
-        cleared_count = await cls.clear_queue(stop_device=True)
         cls.disarm_reply_interrupt("user speech interrupt")
-        logger.info("speech interrupt cleared queue: text=%s cleared=%d", text, cleared_count)
+        logger.info("speech interrupt canceled timer: text=%s", text)
 
     @classmethod
     def try_capture_reply_text(
@@ -525,20 +526,19 @@ class App:
             pass
 
     @classmethod
-    async def _clear_queue_unlocked(cls, stop_device: bool) -> int:
+    async def _clear_queue_unlocked(cls) -> int:
         queued_count = len(cls.play_queue) + (1 if cls.current_song else 0)
         await cls._cancel_timer_unlocked()
         cls.play_history.clear()
         cls.play_queue.clear()
         cls.current_song = None
-        if stop_device:
-            await stop_playback()
+        await stop_playback()
         return queued_count
 
     @classmethod
-    async def clear_queue(cls, stop_device: bool = True) -> int:
+    async def clear_queue(cls) -> int:
         async with cls.local_music_lock:
-            return await cls._clear_queue_unlocked(stop_device=stop_device)
+            return await cls._clear_queue_unlocked()
 
     @classmethod
     def _log_queue(cls, songs: list[SongItem]):
@@ -678,7 +678,7 @@ class App:
             logger.warning("search results exist but none are playable: keyword=%s", keyword)
             return
 
-        cleared_count = await cls.clear_queue(stop_device=True)
+        cleared_count = await cls.clear_queue()
         logger.info(
             "replaced queue with search results: keyword=%s matched=%d cleared=%d",
             keyword,
@@ -719,7 +719,7 @@ class App:
             logger.warning("random results exist but none are playable")
             return
 
-        cleared_count = await cls.clear_queue(stop_device=True)
+        cleared_count = await cls.clear_queue()
         logger.info("replaced queue with random songs: matched=%d cleared=%d", count, cleared_count)
         cls._log_queue(songs)
         await cls._speak_text(f"好的，随机播放{count}首歌曲")
@@ -878,7 +878,7 @@ class App:
 
     @classmethod
     async def stop_music(cls):
-        count = await cls.clear_queue(stop_device=True)
+        count = await cls.clear_queue()
         logger.info("playback stopped and queue cleared: count=%d", count)
 
     @classmethod
